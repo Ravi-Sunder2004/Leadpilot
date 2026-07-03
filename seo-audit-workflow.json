@@ -1,0 +1,238 @@
+{
+  "name": "AI Website Growth Audit",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "audit",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-trigger",
+      "name": "Audit Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "audit-tool-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawUrl = $input.first().json.body.url;\n\nif (!rawUrl) {\n  throw new Error('No URL provided');\n}\n\nlet cleanUrl = rawUrl.trim();\nif (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {\n  cleanUrl = 'https://' + cleanUrl;\n}\n\ntry {\n  new URL(cleanUrl);\n} catch (e) {\n  throw new Error('Invalid URL format');\n}\n\nreturn [{ json: { url: cleanUrl } }];"
+      },
+      "id": "validate-url",
+      "name": "Validate URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 15000,
+          "followRedirect": true,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fetch-page",
+      "name": "Fetch Website HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const html = $input.first().json.body || $input.first().json.data || '';\nconst statusCode = $input.first().json.statusCode || 0;\nconst loadTime = $input.first().json.headers ? null : null;\n\nfunction extractTag(regex, html) {\n  const match = html.match(regex);\n  return match ? match[1].trim() : null;\n}\n\nfunction extractAll(regex, html) {\n  const results = [];\n  let match;\n  while ((match = regex.exec(html)) !== null) {\n    results.push(match[1].replace(/<[^>]*>/g, '').trim());\n  }\n  return results;\n}\n\nconst title = extractTag(/<title[^>]*>([^<]*)<\\/title>/i, html);\nconst metaDescription = extractTag(/<meta\\s+name=[\"']description[\"']\\s+content=[\"']([^\"']*)[\"']/i, html)\n  || extractTag(/<meta\\s+content=[\"']([^\"']*)[\"']\\s+name=[\"']description[\"']/i, html);\n\nconst h1s = extractAll(/<h1[^>]*>(.*?)<\\/h1>/gis, html);\nconst h2s = extractAll(/<h2[^>]*>(.*?)<\\/h2>/gis, html);\nconst h3s = extractAll(/<h3[^>]*>(.*?)<\\/h3>/gis, html);\n\nconst hasViewportTag = /<meta\\s+name=[\"']viewport[\"']/i.test(html);\n\nconst imgTags = html.match(/<img[^>]*>/gi) || [];\nconst imagesWithAlt = imgTags.filter(tag => /alt=[\"'][^\"']+[\"']/.test(tag)).length;\nconst imagesTotal = imgTags.length;\n\nconst bodyText = html\n  .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')\n  .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')\n  .replace(/<[^>]+>/g, ' ')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nconst wordCount = bodyText.split(' ').filter(w => w.length > 0).length;\n\nconst hasSSL = $('Validate URL').first().json.url.startsWith('https://');\n\nconst metaSnippet = bodyText.slice(0, 2500);\n\nreturn [{\n  json: {\n    url: $('Validate URL').first().json.url,\n    statusCode,\n    title,\n    titleLength: title ? title.length : 0,\n    metaDescription,\n    metaDescriptionLength: metaDescription ? metaDescription.length : 0,\n    h1s,\n    h1Count: h1s.length,\n    h2s: h2s.slice(0, 10),\n    h3s: h3s.slice(0, 10),\n    hasViewportTag,\n    hasSSL,\n    imagesTotal,\n    imagesWithAlt,\n    imageAltCoveragePercent: imagesTotal > 0 ? Math.round((imagesWithAlt / imagesTotal) * 100) : 100,\n    wordCount,\n    contentSnippet: metaSnippet\n  }\n}];"
+      },
+      "id": "extract-seo-data",
+      "name": "Extract SEO Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fallback path when fetch fails (site blocks bots, times out, etc.)\nconst urlNode = $('Validate URL').first().json.url;\n\nreturn [{\n  json: {\n    url: urlNode,\n    fetchFailed: true,\n    error: 'Could not fetch this website. It may be blocking automated requests or temporarily unavailable.'\n  }\n}];"
+      },
+      "id": "handle-fetch-error",
+      "name": "Handle Fetch Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-4-6\",\n  max_tokens: 1500,\n  messages: [\n    {\n      role: \"user\",\n      content: `You are a senior SEO and digital marketing consultant. Analyze this website data and return ONLY valid JSON, no markdown formatting, no preamble, no backticks.\n\nWebsite data:\nURL: ${$json.url}\nTitle: ${$json.title || 'MISSING'}\nTitle length: ${$json.titleLength} characters\nMeta description: ${$json.metaDescription || 'MISSING'}\nMeta description length: ${$json.metaDescriptionLength} characters\nH1 tags: ${JSON.stringify($json.h1s)}\nH2 tags: ${JSON.stringify($json.h2s)}\nHas mobile viewport tag: ${$json.hasViewportTag}\nHas SSL: ${$json.hasSSL}\nImage alt-text coverage: ${$json.imageAltCoveragePercent}%\nWord count: ${$json.wordCount}\nContent sample: ${$json.contentSnippet}\n\nReturn this exact JSON structure:\n{\n  \"overallScore\": <number 0-100>,\n  \"scoreLabel\": \"<one of: Needs Work, Fair, Good, Excellent>\",\n  \"businessSummary\": \"<one sentence describing what this business does, based on the content>\",\n  \"technicalFindings\": [\n    {\"issue\": \"<short issue name>\", \"severity\": \"<high|medium|low>\", \"explanation\": \"<one sentence, plain language, no jargon>\"}\n  ],\n  \"keywordOpportunities\": [\n    {\"keyword\": \"<suggested keyword phrase>\", \"reason\": \"<one sentence why this matters for their business>\"}\n  ],\n  \"contentOpportunities\": [\n    \"<one specific content idea, phrased as an action>\"\n  ],\n  \"automationOpportunities\": [\n    {\"opportunity\": \"<short name like 'Lead capture chatbot'>\", \"reason\": \"<one sentence tied to something specific you noticed about their site>\"}\n  ],\n  \"quickWins\": [\n    \"<the single most impactful, easiest thing they could fix this week>\"\n  ]\n}\n\nRules: technicalFindings should have 3-5 items based on real issues you can see in the data (missing meta description, too many/few H1s, no alt text, etc - only flag real problems found in the data above). keywordOpportunities should have 4-5 realistic keyword phrases a customer might search for this type of business. contentOpportunities should have 2-3 ideas. automationOpportunities should have 2-3 ideas relevant to a small business (chatbot, lead capture form, automated follow-up, appointment booking, review requests). quickWins should have exactly 1 item - the highest-leverage easiest fix.`\n    }\n  ]\n}) }}"
+      },
+      "id": "call-claude",
+      "name": "Generate Report with Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const claudeResponse = $input.first().json;\nconst seoData = $('Extract SEO Data').first().json;\n\nlet reportText = claudeResponse.content[0].text;\n\nreportText = reportText.trim();\nif (reportText.startsWith('```')) {\n  reportText = reportText.replace(/^```(json)?/, '').replace(/```$/, '').trim();\n}\n\nlet report;\ntry {\n  report = JSON.parse(reportText);\n} catch (e) {\n  throw new Error('Failed to parse AI response as JSON: ' + e.message);\n}\n\nreturn [{\n  json: {\n    success: true,\n    url: seoData.url,\n    crawledData: {\n      title: seoData.title,\n      metaDescription: seoData.metaDescription,\n      h1Count: seoData.h1Count,\n      wordCount: seoData.wordCount,\n      hasSSL: seoData.hasSSL,\n      hasViewportTag: seoData.hasViewportTag,\n      imageAltCoveragePercent: seoData.imageAltCoveragePercent\n    },\n    report\n  }\n}];"
+      },
+      "id": "format-final-report",
+      "name": "Format Final Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    success: false,\n    url: $('Validate URL').first().json.url,\n    error: $json.error || 'Something went wrong while generating your report. Please try again.'\n  }\n}];"
+      },
+      "id": "format-error-response",
+      "name": "Format Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 480]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "webhook-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.2,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Audit Request Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate URL": {
+      "main": [
+        [
+          {
+            "node": "Fetch Website HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website HTML": {
+      "main": [
+        [
+          {
+            "node": "Extract SEO Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Fetch Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract SEO Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Report with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Fetch Error": {
+      "main": [
+        [
+          {
+            "node": "Format Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Report with Claude": {
+      "main": [
+        [
+          {
+            "node": "Format Final Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Report": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error Response": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
