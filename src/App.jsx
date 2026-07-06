@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import './App.css'
 
-const N8N_WEBHOOK_URL = 'https://YOUR-AZURE-VM-DOMAIN/webhook/audit'
+const N8N_WEBHOOK_URL = 'http://seolead.duckdns.org/webhook/audit'
 
 function ScoreDial({ score }) {
   const radius = 70
@@ -197,7 +197,7 @@ function App() {
                 that keeps working after this report closes.
               </p>
               <a
-                href="https://cal.com/YOUR-CALENDLY-LINK"
+                href="https://cal.com/ravi-sunder-j55lv4/free-seo-consultation"
                 target="_blank"
                 rel="noreferrer"
                 className="cta-button"
